@@ -2,9 +2,9 @@
 
 Classic LRP explains one output score. Here there is no score, so we start
 from the spatial features themselves: a total amount of 1, spread over the
-feature values (channel x position), either evenly or in proportion to how
-active each value is. LRP then passes this amount back through the network,
-layer by layer, until it reaches the pixels.
+feature values (channel x position) in proportion to how active each value
+is. LRP then passes this amount back through the network, layer by layer,
+until it reaches the pixels.
 
 How the amount is split at each layer is decided by *rules* (zennit provides
 them). Modern vision models contain operations that zennit does not handle out of
@@ -371,14 +371,13 @@ class RoleComposite(LayerMapComposite):
 #   residual: how a residual sum splits relevance between its branches, 'equal',
 #             'magnitude' or 'activation' (Norm: in proportion to the signed contributions)
 #   stem:     the rule for the first convolution, 'wsquare' or 'zplus'
-#   start:    how the starting amount is spread over the features, see ``explain``
 LRP_SETTINGS = {
-    'resnet':   {'residual': 'equal', 'stem': 'zplus', 'start': 'uniform'},
-    'convnext': {'residual': 'activation', 'stem': 'wsquare', 'start': 'activation'},
-    'swin':     {'residual': 'activation', 'stem': 'wsquare', 'start': 'uniform'},
-    'maxvit':   {'residual': 'magnitude', 'stem': 'wsquare', 'start': 'uniform'},
-    'vit':      {'residual': 'magnitude', 'stem': 'zplus', 'start': 'uniform'},
-    'eva':      {'residual': 'magnitude', 'stem': 'zplus', 'start': 'uniform'},
+    'resnet':   {'residual': 'equal', 'stem': 'zplus'},
+    'convnext': {'residual': 'activation', 'stem': 'wsquare'},
+    'swin':     {'residual': 'activation', 'stem': 'wsquare'},
+    'maxvit':   {'residual': 'magnitude', 'stem': 'wsquare'},
+    'vit':      {'residual': 'magnitude', 'stem': 'zplus'},
+    'eva':      {'residual': 'magnitude', 'stem': 'zplus'},
 }
 
 
@@ -489,18 +488,17 @@ def merged_batch_norms(model, x):
 # 5. Explain
 # ============================================================================
 
-def explain(model, x, start=None, exclude=()):
+def explain(model, x, exclude=()):
     """Relevance of every input pixel for the model's spatial features.
+
+    The starting amount of 1 is spread over the feature values (channel x
+    position) in proportion to their positive part: strongly active features
+    start with more relevance, inactive ones with none. This is the quantity
+    the averaged map shows (ReLU, then average). The positive part, because
+    these features are signed and their raw sum can be negative.
 
     model:   a ``xai_utils.models.FeatureExtractor`` (knows its family and rules).
     x:       a preprocessed 1x3xHxW tensor.
-    start:   how the initial amount of 1 is spread over the feature values
-             (channel x position). 'uniform' gives every value the same share.
-             'activation' gives each value a share in proportion to its
-             positive part, so that strongly active features start with more
-             relevance (the positive part, because these features are signed
-             and their raw sum can be negative). By default, the setting of
-             the model's family in ``LRP_SETTINGS``.
     exclude: feature cells (row, column) that get no starting amount at all.
     Returns the relevance as a 3xHxW tensor (one map per colour channel).
 
@@ -515,10 +513,7 @@ def explain(model, x, start=None, exclude=()):
     try:
         with torch.enable_grad(), merged_batch_norms(model, x), composite.context(model):
             features = model(x)
-            if (start or LRP_SETTINGS[family]['start']) == 'uniform':
-                amount = torch.ones_like(features)
-            else:
-                amount = features.detach().clamp(min=0)
+            amount = features.detach().clamp(min=0)
             for row, col in exclude:
                 amount[..., row, col] = 0
             relevance, = torch.autograd.grad(features, x, amount / amount.sum())

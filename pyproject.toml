@@ -1,0 +1,22 @@
+[project]
+name = "deep-unboxing"
+version = "0.1.0"
+description = "Companion notebooks for blog posts on what deep vision models see and how to explain it"
+readme = "README.md"
+requires-python = ">=3.11.11"
+dependencies = [
+    "torch>=2.5",
+    "torchvision>=0.20",
+    # the LRP canonizers in xai_utils/lrp.py rewrite timm forward passes, so timm is pinned
+    "timm==1.0.29",
+    "zennit==1.0.0",
+    "numpy",
+    "matplotlib",
+    "pillow",
+    "jupyterlab",
+    "ipykernel",
+    "ipywidgets",
+]
+
+[tool.uv]
+package = false

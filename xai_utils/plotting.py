@@ -12,17 +12,16 @@ import torch
 def _draw(ax, image, cmap='inferno'):
     """One image (PIL, array or tensor) or heatmap on one axis, without ticks."""
     image = image.detach().cpu().numpy() if torch.is_tensor(image) else np.asarray(image)
-    coarse = image.ndim == 2 and image.shape[0] < 64
-    ax.imshow(image, cmap=cmap if image.ndim == 2 else None, interpolation='nearest' if coarse else 'antialiased')
+    ax.imshow(image, cmap=cmap if image.ndim == 2 else None, interpolation='nearest')
     ax.set_xticks([])
     ax.set_yticks([])
 
 
-def show_images(images, titles, size=2.6):
+def show_images(images, titles, size=2.6, cmap='inferno'):
     """A single row of images or heatmaps with titles."""
     fig, axes = plt.subplots(1, len(images), figsize=(size * len(images), size), squeeze=False)
     for ax, image, title in zip(axes[0], images, titles):
-        _draw(ax, image)
+        _draw(ax, image, cmap)
         ax.set_title(title, fontsize=10)
     fig.tight_layout()
     plt.show()

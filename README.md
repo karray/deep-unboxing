@@ -7,6 +7,7 @@ numbers of one post.
 | Notebook | Blog post |
 |---|---|
 | `01_label_free_maps.ipynb` | [What Does a Vision Model See Without Labels?](https://karay.me/2026/10/01/unsupervised-feature-attribution.html) |
+| `02_label_free_lrp.ipynb` | What is LRP and Why it Fails Quietly on Modern Vision Models |
 
 ## Setup
 
@@ -42,9 +43,3 @@ The LRP rules in `xai_utils/lrp.py` are one reasonable set of choices for these
 architectures. They are condensed from a larger research code base and
 reproduce its relevance maps exactly for all models except DINOv2, which is
 loaded here through timm instead of Meta's own code.
-
-## What is not in here
-
-The quantitative evaluation of the LaFAM paper (ImageNet-S and PASCAL VOC with
-the Quantus metrics) is not reproduced here. See the
-[LaFAM repository](https://github.com/karray/LaFAM) for that.

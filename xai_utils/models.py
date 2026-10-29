@@ -75,7 +75,7 @@ class FeatureExtractor(nn.Module):
         return y                                         # CNNs, MaxViT: already (B, C, H, W)
 
 
-def load_model(key, device='cuda' if torch.cuda.is_available() else 'cpu'):
+def load_model(key, device):
     """Download (on first use) and return the model in eval mode, on the GPU if there is one.
 
     Memory held by models that are no longer in use is released first.

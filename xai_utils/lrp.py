@@ -12,8 +12,10 @@ the box, so this module adds three things:
 
 1. Canonizers rewrite a few forward passes so that every residual "+" becomes
    an explicit ``Sum`` module (a place where a rule can decide how to split),
-   attention weights are held constant, and the LayerNorm denominator is
-   treated as a constant.
+   attention weights and the gates of gated MLPs (SwiGLU) are held constant,
+   and the LayerNorm denominator is treated as a constant. Optionally, the
+   position embedding of a ViT is added through a ``Sum`` too, so that it takes
+   its own share of the relevance.
 2. A composite assigns a rule to every layer by its role (stem, block,
    downsampling, normalization, residual sum).
 3. ``explain`` runs the forward pass, puts the starting amount on the
@@ -32,6 +34,7 @@ from torch.overrides import TorchFunctionMode
 from timm.layers import LayerNorm2d, LayerScale
 from timm.layers.activations import GELU as TimmGELU, GELUTanh
 from timm.layers.attention import Attention
+from timm.layers.mlp import GluMlp, SwiGLU
 from timm.layers.squeeze_excite import SEModule
 from timm.models import convnext, eva, maxxvit, resnet, swin_transformer, vision_transformer
 from zennit.canonizers import AttributeCanonizer
@@ -67,7 +70,7 @@ class AttentionMix(nn.Module):
 
 
 class GatedSignal(nn.Module):
-    """x * gate with the gate held constant (squeeze-and-excitation)."""
+    """x * gate with the gate held constant (squeeze-and-excitation, gated MLPs)."""
 
     def forward(self, x):
         return x * self.gate
@@ -267,6 +270,68 @@ class FixedAttention(AttributeCanonizer):
         return self.proj_drop(self.proj(x))
 
 
+class ConstantGate(AttributeCanonizer):
+    """Gated MLPs (GLU, SwiGLU) with the gate held constant, so relevance flows through the value branch only.
+
+    The same treatment as the squeeze-and-excitation gate: the gate scales the signal but does not take relevance.
+    """
+
+    def __init__(self):
+        super().__init__(self.attributes)
+
+    @classmethod
+    def attributes(cls, name, module):
+        if isinstance(module, GluMlp):
+            return {'forward': cls.glu_mlp.__get__(module), 'lrp_gated': GatedSignal()}
+        if isinstance(module, SwiGLU):
+            return {'forward': cls.swiglu.__get__(module), 'lrp_gated': GatedSignal()}
+        return None
+
+    @staticmethod
+    def glu_mlp(self, x):
+        x1, x2 = self.fc1(x).chunk(2, dim=self.chunk_dim)
+        value, gate = (x1, x2) if self.gate_last else (x2, x1)
+        self.lrp_gated.gate = self.act(gate).detach()
+        return self.drop2(self.fc2(self.norm(self.drop1(self.lrp_gated(value)))))
+
+    @staticmethod
+    def swiglu(self, x):
+        self.lrp_gated.gate = self.act(self.fc1_g(x)).detach()
+        return self.drop2(self.fc2(self.norm(self.drop1(self.lrp_gated(self.fc1_x(x))))))
+
+
+class PositionSum(AttributeCanonizer):
+    """The position embedding of a timm ViT added through an explicit Sum, so that it takes its own share of the relevance.
+
+    Without it, the addition passes all relevance to the patch embeddings. The forward result is unchanged.
+    """
+
+    def __init__(self):
+        super().__init__(self.attributes)
+
+    @classmethod
+    def attributes(cls, name, module):
+        if isinstance(module, vision_transformer.VisionTransformer) and module.pos_embed is not None:
+            return {'_pos_embed': cls.pos_embed.__get__(module), 'lrp_pos_sum': Sum(dim=-1)}
+        return None
+
+    @staticmethod
+    def pos_embed(self, x):
+        prefix = [t.expand(x.shape[0], -1, -1) for t in (self.cls_token, self.reg_token) if t is not None]
+        if self.dynamic_img_size:
+            B, H, W, C = x.shape
+            pos = vision_transformer.resample_abs_pos_embed(self.pos_embed, new_size=(H, W), old_size=self.patch_embed.grid_size,
+                                                            num_prefix_tokens=0 if self.no_embed_class else self.num_prefix_tokens)
+            x = x.view(B, -1, C)
+        else:
+            pos = self.pos_embed
+        if self.no_embed_class:              # positions for the patches only: add, then prepend the prefix tokens
+            x = torch.cat(prefix + [_add(self.lrp_pos_sum, x, pos.expand(x.shape[0], -1, -1))], dim=1)
+        else:                                # positions for every token: prepend, then add
+            x = _add(self.lrp_pos_sum, torch.cat(prefix + [x], dim=1), pos.expand(x.shape[0], -1, -1))
+        return self.pos_drop(x)
+
+
 class ConstantLayerNormScale(AttributeCanonizer):
     """LayerNorm with its denominator (the standard deviation) treated as a constant.
 
@@ -381,14 +446,21 @@ LRP_SETTINGS = {
 }
 
 
-def make_composite(family):
-    """The rule set for one architecture family."""
+def make_composite(family, position_share=False):
+    """The rule set for one architecture family.
+
+    position_share: for ViTs, add the position embedding through a Sum, so that it takes its own share of the relevance
+                    (split like a residual). By default it takes none, as in the blog post.
+    """
     settings = LRP_SETTINGS[family]
     if family == 'resnet':
         composite = EpsilonPlus(canonizers=[ResNetBottleneckCanonizer(), ExplicitResiduals()])
     else:
         stem_rule = {'wsquare': WSquare, 'zplus': ZPlus}[settings['stem']]()
-        composite = RoleComposite([ExplicitResiduals(), FixedAttention(), ConstantLayerNormScale()], stem_rule)
+        canonizers = [ExplicitResiduals(), FixedAttention(), ConstantGate(), ConstantLayerNormScale()]
+        if position_share:
+            canonizers.append(PositionSum())
+        composite = RoleComposite(canonizers, stem_rule)
     if settings['residual'] != 'activation':
         split = {'equal': EqualSplit, 'magnitude': MagnitudeSplit}[settings['residual']]
         composite.layer_map.insert(0, (Sum, split()))
